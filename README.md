@@ -49,7 +49,7 @@ The server starts on `http://0.0.0.0:42424`.
 import openai
 
 client = openai.OpenAI(
-    api_key="your-secret-key",
+    api_key="secret_api_key_you_have_to_replace",
     base_url="http://localhost:42424/v1",
 )
 
@@ -64,7 +64,7 @@ print(response.choices[0].message.content)
 
 ```bash
 curl http://localhost:42424/v1/chat/completions \
-  -H "Authorization: Bearer your-secret-key" \
+  -H "Authorization: Bearer secret_api_key_you_have_to_replace" \
   -H "Content-Type: application/json" \
   -d '{"model": "global.anthropic.claude-sonnet-4-6", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
