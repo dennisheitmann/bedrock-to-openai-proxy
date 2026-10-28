@@ -14,6 +14,7 @@ from backends import BedrockBackend
 from backends.base import Backend
 
 BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"
+BACKENDREGION = "us-east-1"
 API_KEY = "secret_api_key_you_have_to_replace"
 
 _bearer = HTTPBearer()
@@ -28,7 +29,7 @@ _backends: dict[str, Backend] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _backends[BACKENDMODEL] = BedrockBackend(BACKENDMODEL, region="us-east-1")
+    _backends[BACKENDMODEL] = BedrockBackend(BACKENDMODEL, region=BACKENDREGION)
     yield
     for backend in _backends.values():
         if hasattr(backend, "close"):
