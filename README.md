@@ -24,15 +24,12 @@ pip install fastapi uvicorn boto3
 
 ## Configuration
 
-| Environment variable | Required | Description |
-|---|---|---|
-| `PROXY_API_KEY` | Yes | Bearer token clients must send in the `Authorization` header |
-
-Set the model and region directly in `server.py`:
+Set the model, region and API_KEY directly in `server.py`:
 
 ```python
-BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"  # Bedrock model ID
-# region is set in lifespan: BedrockBackend(BACKENDMODEL, region="us-east-1")
+BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"
+BACKENDREGION = "us-east-1"
+API_KEY = "secret_api_key_you_have_to_replace"
 ```
 
 ## Running
