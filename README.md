@@ -32,7 +32,7 @@ Set the model and region directly in `server.py`:
 
 ```python
 BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"  # Bedrock model ID
-# region is set in lifespan: BedrockBackend(BACKENDMODEL, region="eu-north-1")
+# region is set in lifespan: BedrockBackend(BACKENDMODEL, region="us-east-1")
 ```
 
 ## Running
