@@ -7,13 +7,13 @@ from typing import Any
 import os
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Security
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from backends import BedrockBackend
-from backends.base import Backend
+from backends.base import Backend, BadRequestError
 
 BACKENDMODEL = "global.anthropic.claude-sonnet-5-5"
 BACKENDREGION = "eu-north-1"
@@ -48,6 +48,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+@app.exception_handler(BadRequestError)
+async def _bad_request_handler(request: Request, exc: BadRequestError):
+    return JSONResponse(status_code=400, content={"error": {"message": str(exc), "type": "invalid_request_error"}})
+
+
 def _get_backend(model: str) -> Backend:
     if model not in _backends:
         raise HTTPException(status_code=400, detail=f"Model '{model}' not found. Available: {list(_backends)}")
@@ -66,6 +71,21 @@ class ChatRequest(BaseModel):
     model: str = BACKENDMODEL
     messages: list[Message]
     stream: bool = False
+    max_tokens: int | None = None
+    max_completion_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    stop: str | list[str] | None = None
+
+    def backend_params(self) -> dict[str, Any]:
+        """Sampling parameters forwarded to the backend (None values are left out)."""
+        params = {
+            "max_tokens": self.max_completion_tokens or self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stop": self.stop,
+        }
+        return {k: v for k, v in params.items() if v is not None}
 
 
 class ResponsesRequest(BaseModel):
@@ -101,6 +121,7 @@ async def _sse_chat_chunks(chunks, model: str):
     started = time.monotonic()
     text_chunks = 0
     finished = False
+    failed = False
 
     def frame(delta: dict, finish_reason: str | None = None) -> str:
         payload = {
@@ -117,11 +138,29 @@ async def _sse_chat_chunks(chunks, model: str):
         async for text in chunks:
             text_chunks += 1
             yield frame({"content": text})
-        yield frame({}, finish_reason="stop")
-        yield "data: [DONE]\n\n"
+        error = getattr(chunks, "error", None)
+        if error:
+            # The HTTP 200 is already sent, so report the failure inside the stream.
+            failed = True
+            payload = {"error": {"message": f"Upstream error: {error}", "type": "upstream_error"}}
+            yield f"data: {json.dumps(payload)}\n\n"
+            yield "data: [DONE]\n\n"
+        else:
+            yield frame({}, finish_reason=getattr(chunks, "finish_reason", None) or "stop")
+            yield "data: [DONE]\n\n"
         finished = True
     finally:
-        state = "completed" if finished else "ended early (client disconnected or error)"
+        # Release the upstream stream even when the client disconnected mid-reply.
+        aclose = getattr(chunks, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+        if failed:
+            state = "failed mid-stream"
+        else:
+            state = "completed" if finished else "ended early (client disconnected or error)"
         print(f"[stream] {completion_id} {state} after {time.monotonic() - started:.1f}s, {text_chunks} text chunks", flush=True)
 
 
@@ -162,21 +201,21 @@ async def chat_completions(req: ChatRequest):
     print(f"[request] {time.strftime('%H:%M:%S')} stream={req.stream} model={req.model} messages={len(messages)}", flush=True)
 
     if req.stream:
-        chunks = await backend.stream(messages, is_new=is_new)
+        chunks = await backend.stream(messages, is_new=is_new, **req.backend_params())
         return StreamingResponse(
             _sse_chat_chunks(chunks, req.model),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
 
-    reply = await backend.complete(messages, is_new=is_new)
+    result = await backend.complete_full(messages, is_new=is_new, **req.backend_params())
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": req.model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": reply}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": result.text}, "finish_reason": result.finish_reason}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
