@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
         BACKENDMODEL,
         region=BACKENDREGION,
         max_tokens=BACKENDMAXTOKENS,
+        min_tokens=BACKENDMINTOKENS,
         timeout=BACKENDTIMEOUT,
     )
     yield
@@ -248,3 +249,4 @@ async def responses(req: ResponsesRequest):
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=42424)
+
