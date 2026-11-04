@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -7,15 +8,18 @@ import os
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from backends import BedrockBackend
 from backends.base import Backend
 
-BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"
-BACKENDREGION = "us-east-1"
-API_KEY = "secret_api_key_you_have_to_replace"
+BACKENDMODEL = "global.anthropic.claude-sonnet-5-5"
+BACKENDREGION = "eu-north-1"
+BACKENDMAXTOKENS = 64000  # max output tokens per reply (Bedrock's default is much lower)
+BACKENDTIMEOUT = 300  # seconds Bedrock may stay silent before the call is abandoned
+API_KEY = "DENNIS_HEITMANN_PROXY_API_KEY"
 
 _bearer = HTTPBearer()
 
@@ -29,7 +33,12 @@ _backends: dict[str, Backend] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _backends[BACKENDMODEL] = BedrockBackend(BACKENDMODEL, region=BACKENDREGION)
+    _backends[BACKENDMODEL] = BedrockBackend(
+        BACKENDMODEL,
+        region=BACKENDREGION,
+        max_tokens=BACKENDMAXTOKENS,
+        timeout=BACKENDTIMEOUT,
+    )
     yield
     for backend in _backends.values():
         if hasattr(backend, "close"):
@@ -56,7 +65,7 @@ class ChatRequest(BaseModel):
     model_config = {"extra": "ignore"}
     model: str = BACKENDMODEL
     messages: list[Message]
-    stream: bool = False  # streaming not supported
+    stream: bool = False
 
 
 class ResponsesRequest(BaseModel):
@@ -83,6 +92,37 @@ def _is_new_conversation(messages: list) -> bool:
         (m.get("role") if isinstance(m, dict) else m.role) == "assistant"
         for m in messages
     )
+
+
+async def _sse_chat_chunks(chunks, model: str):
+    """Wrap text deltas in OpenAI chat.completion.chunk server-sent events."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    started = time.monotonic()
+    text_chunks = 0
+    finished = False
+
+    def frame(delta: dict, finish_reason: str | None = None) -> str:
+        payload = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(payload)}\n\n"
+
+    try:
+        yield frame({"role": "assistant", "content": ""})
+        async for text in chunks:
+            text_chunks += 1
+            yield frame({"content": text})
+        yield frame({}, finish_reason="stop")
+        yield "data: [DONE]\n\n"
+        finished = True
+    finally:
+        state = "completed" if finished else "ended early (client disconnected or error)"
+        print(f"[stream] {completion_id} {state} after {time.monotonic() - started:.1f}s, {text_chunks} text chunks", flush=True)
 
 
 def _responses_to_messages(input_messages: list[dict]) -> list[dict]:
@@ -118,7 +158,18 @@ async def chat_completions(req: ChatRequest):
 
     backend = _get_backend(req.model)
     messages = [m.model_dump() for m in req.messages]
-    reply = await backend.complete(messages, is_new=_is_new_conversation(req.messages))
+    is_new = _is_new_conversation(req.messages)
+    print(f"[request] {time.strftime('%H:%M:%S')} stream={req.stream} model={req.model} messages={len(messages)}", flush=True)
+
+    if req.stream:
+        chunks = await backend.stream(messages, is_new=is_new)
+        return StreamingResponse(
+            _sse_chat_chunks(chunks, req.model),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    reply = await backend.complete(messages, is_new=is_new)
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
