@@ -42,10 +42,12 @@ class BedrockBackend(Backend):
         max_tokens: int = 64000,
         timeout: int = 300,
         forward_sampling_params: bool = False,
+        min_tokens: int = 0,
     ):
         self.model_id = model_id
         self.region = region
         self.max_tokens = max_tokens
+        self.min_tokens = min_tokens
         # Claude Sonnet 5.5 rejects temperature/top_p/top_k with a 400 error, so they are
         # dropped by default. Enable only for models that still accept them.
         self.forward_sampling_params = forward_sampling_params
@@ -82,8 +84,9 @@ class BedrockBackend(Backend):
         """Map OpenAI-style sampling parameters to Bedrock's inferenceConfig."""
         max_tokens = params.get("max_tokens")
         if isinstance(max_tokens, int) and max_tokens > 0:
-            # Never exceed the configured ceiling.
-            max_tokens = min(max_tokens, self.max_tokens)
+            # Never exceed the configured ceiling, and never go below the floor. Some clients
+            # send a small cap (e.g. 4096) that the model's reasoning alone can use up.
+            max_tokens = max(min(max_tokens, self.max_tokens), min(self.min_tokens, self.max_tokens))
         else:
             max_tokens = self.max_tokens
         config: dict[str, Any] = {"maxTokens": max_tokens}
@@ -137,6 +140,9 @@ class BedrockBackend(Backend):
         # worker thread to keep the event loop free for other requests.
         loop = asyncio.get_running_loop()
         iterator = iter(events)
+        # Counts of delta types seen (text, reasoningContent, toolUse). Shows what the model
+        # spent its output tokens on when a reply contains no text.
+        delta_kinds: dict[str, int] = {}
         try:
             while True:
                 try:
@@ -159,10 +165,15 @@ class BedrockBackend(Backend):
                 if "messageStop" in event:
                     stop_reason = event["messageStop"].get("stopReason")
                     state.finish_reason = _finish_reason(stop_reason)
-                    print(f"[bedrock] stream finished, stopReason={stop_reason}", flush=True)
+                    print(
+                        f"[bedrock] stream finished, stopReason={stop_reason}, delta kinds={delta_kinds}",
+                        flush=True,
+                    )
                 elif "metadata" in event:
                     print(f"[bedrock] usage={event['metadata'].get('usage')}", flush=True)
                 delta = event.get("contentBlockDelta", {}).get("delta", {})
+                for kind in delta:
+                    delta_kinds[kind] = delta_kinds.get(kind, 0) + 1
                 if "text" in delta:
                     yield delta["text"]
         finally:
