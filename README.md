@@ -27,9 +27,9 @@ pip install fastapi uvicorn boto3
 Set the model, region and API_KEY directly in `server.py`:
 
 ```python
-BACKENDMODEL = "global.anthropic.claude-sonnet-4-6"
-BACKENDREGION = "us-east-1"
-API_KEY = "secret_api_key_you_have_to_replace"
+BACKENDMODEL = "global.anthropic.claude-sonnet-5-5"
+BACKENDREGION = "eu-north-1"
+API_KEY = "DENNIS_HEITMANN_PROXY_API_KEY"
 ```
 
 ## Running
@@ -64,9 +64,9 @@ print(response.choices[0].message.content)
 
 ```bash
 curl http://localhost:42424/v1/chat/completions \
-  -H "Authorization: Bearer secret_api_key_you_have_to_replace" \
+  -H "Authorization: Bearer DENNIS_HEITMANN_PROXY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "global.anthropic.claude-sonnet-4-6", "messages": [{"role": "user", "content": "Hello!"}]}'
+  -d '{"model": "global.anthropic.claude-sonnet-5-5", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
 ## Endpoints
