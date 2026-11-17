@@ -19,6 +19,7 @@ BACKENDMODEL = "global.anthropic.claude-sonnet-5-5"
 BACKENDREGION = "eu-north-1"
 BACKENDMAXTOKENS = 64000  # max output tokens per reply (Bedrock's default is much lower)
 BACKENDTIMEOUT = 300  # seconds Bedrock may stay silent before the call is abandoned
+STREAM_FLUSH_INTERVAL = 0.05 # Streamed text is collected and sent to the client at most this often (seconds)
 API_KEY = "DENNIS_HEITMANN_PROXY_API_KEY"
 
 _bearer = HTTPBearer()
@@ -120,7 +121,8 @@ async def _sse_chat_chunks(chunks, model: str):
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     started = time.monotonic()
-    text_chunks = 0
+    text_chunks = 0  # pieces of text received from the backend
+    frames_sent = 0  # text events sent to the client after batching
     finished = False
     failed = False
 
@@ -136,9 +138,22 @@ async def _sse_chat_chunks(chunks, model: str):
 
     try:
         yield frame({"role": "assistant", "content": ""})
+        buffer: list[str] = []
+        last_flush = time.monotonic()
         async for text in chunks:
             text_chunks += 1
-            yield frame({"content": text})
+            buffer.append(text)
+            # The buffer is only checked when a new piece arrives, so text never waits
+            # longer than the gap between two pieces from the backend.
+            if time.monotonic() - last_flush >= STREAM_FLUSH_INTERVAL:
+                yield frame({"content": "".join(buffer)})
+                frames_sent += 1
+                buffer = []
+                last_flush = time.monotonic()
+        if buffer:
+            # Send the remaining text before the error or finish event.
+            yield frame({"content": "".join(buffer)})
+            frames_sent += 1
         error = getattr(chunks, "error", None)
         if error:
             # The HTTP 200 is already sent, so report the failure inside the stream.
@@ -162,7 +177,7 @@ async def _sse_chat_chunks(chunks, model: str):
             state = "failed mid-stream"
         else:
             state = "completed" if finished else "ended early (client disconnected or error)"
-        print(f"[stream] {completion_id} {state} after {time.monotonic() - started:.1f}s, {text_chunks} text chunks", flush=True)
+        print(f"[stream] {completion_id} {state} after {time.monotonic() - started:.1f}s, {text_chunks} text chunks sent as {frames_sent} frames", flush=True)
 
 
 def _responses_to_messages(input_messages: list[dict]) -> list[dict]:
@@ -249,4 +264,3 @@ async def responses(req: ResponsesRequest):
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=42424)
-
